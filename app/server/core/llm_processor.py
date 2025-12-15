@@ -195,6 +195,9 @@ Rules:
 - The query should be something that demonstrates the value of querying this data
 - Use natural, conversational language
 - Don't use technical SQL terms - phrase it like a real user would ask
+- IMPORTANT: Only reference tables that are explicitly listed in the schema above
+- Do NOT assume or reference any tables that are not in the schema
+- If you want to combine data from multiple tables, ensure both tables exist in the schema
 
 Also provide a brief context explaining why this query would be interesting or valuable (one sentence).
 
@@ -277,6 +280,9 @@ Rules:
 - The query should be something that demonstrates the value of querying this data
 - Use natural, conversational language
 - Don't use technical SQL terms - phrase it like a real user would ask
+- IMPORTANT: Only reference tables that are explicitly listed in the schema above
+- Do NOT assume or reference any tables that are not in the schema
+- If you want to combine data from multiple tables, ensure both tables exist in the schema
 
 Also provide a brief context explaining why this query would be interesting or valuable (one sentence).
 

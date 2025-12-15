@@ -119,7 +119,7 @@ TABLES: products"""
 
         with patch.dict(os.environ, {'OPENAI_API_KEY': 'test-key'}):
             # Only request query for products table
-            result = generate_random_query_with_openai(multiple_tables_schema, table_names=['products'])
+            generate_random_query_with_openai(multiple_tables_schema, table_names=['products'])
 
             # Verify the prompt included only products table
             call_args = mock_client.chat.completions.create.call_args
