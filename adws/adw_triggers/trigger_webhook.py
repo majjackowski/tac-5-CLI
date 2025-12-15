@@ -20,6 +20,9 @@ Environment Requirements:
 import os
 import subprocess
 import sys
+import threading
+import time
+import atexit
 from typing import Optional
 from fastapi import FastAPI, Request
 from dotenv import load_dotenv
@@ -38,6 +41,132 @@ load_dotenv()
 
 # Configuration
 PORT = int(os.getenv("PORT", "8001"))
+ENABLE_TUNNEL = os.getenv("ENABLE_TUNNEL", "true").lower() == "true"
+
+# Global tunnel process
+tunnel_process = None
+tunnel_url = None
+TUNNEL_NAME = "adw-webhook"
+TUNNEL_HOSTNAME = os.getenv("CLOUDFLARE_TUNNEL_HOSTNAME", "adw-webhook.trianyx.com")
+
+def start_cloudflare_tunnel():
+    """Start cloudflared named tunnel to expose webhook publicly."""
+    global tunnel_process, tunnel_url
+
+    try:
+        # Check if cloudflared is installed
+        subprocess.run(["cloudflared", "--version"], capture_output=True, check=True)
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        print("⚠️  cloudflared not found. Install with: wget https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 && chmod +x cloudflared-linux-amd64 && sudo mv cloudflared-linux-amd64 /usr/local/bin/cloudflared")
+        return
+
+    try:
+        # Check if named tunnel exists AND DNS is working
+        result = subprocess.run(
+            ["cloudflared", "tunnel", "info", TUNNEL_NAME],
+            capture_output=True,
+            text=True
+        )
+
+        # Also check if DNS resolves (quick test)
+        import socket
+        dns_works = False
+        try:
+            socket.gethostbyname(TUNNEL_HOSTNAME)
+            dns_works = True
+        except socket.gaierror:
+            dns_works = False
+
+        if result.returncode != 0:
+            print(f"⚠️  Named tunnel '{TUNNEL_NAME}' not found. Run: cloudflared tunnel create {TUNNEL_NAME}")
+            print("Falling back to quick tunnel...")
+            start_quick_tunnel()
+            return
+
+        if not dns_works:
+            print(f"⚠️  DNS for '{TUNNEL_HOSTNAME}' not resolving yet.")
+            print("   You need to update your domain's nameservers to Cloudflare.")
+            print("   Falling back to quick tunnel for now...")
+            start_quick_tunnel()
+            return
+
+        print(f"Starting Cloudflare Named Tunnel '{TUNNEL_NAME}'...")
+        tunnel_url = f"https://{TUNNEL_HOSTNAME}"
+
+        tunnel_process = subprocess.Popen(
+            ["cloudflared", "tunnel", "run", TUNNEL_NAME],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1
+        )
+
+        # Read tunnel output in a thread
+        def read_tunnel_output():
+            try:
+                for line in tunnel_process.stderr:
+                    print(f"[Tunnel] {line.rstrip()}")
+                    # Check for successful connection
+                    if "Registered tunnel connection" in line:
+                        print(f"\n✅ Named Tunnel Ready!")
+                        print(f"   Public webhook URL: {tunnel_url}/gh-webhook")
+                        print(f"   This URL is PERMANENT - no need to update GitHub!\n")
+            except Exception as e:
+                print(f"Error reading tunnel output: {e}")
+
+        thread = threading.Thread(target=read_tunnel_output, daemon=True)
+        thread.start()
+
+    except Exception as e:
+        print(f"Failed to start tunnel: {e}")
+
+
+def start_quick_tunnel():
+    """Fallback: Start cloudflared quick tunnel (URL changes on restart)."""
+    global tunnel_process, tunnel_url
+
+    try:
+        print("Starting Cloudflare Quick Tunnel (fallback)...")
+        tunnel_process = subprocess.Popen(
+            ["cloudflared", "tunnel", "--url", f"http://localhost:{PORT}"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1
+        )
+
+        def read_tunnel_output():
+            global tunnel_url
+            try:
+                for line in tunnel_process.stderr:
+                    print(f"[Tunnel] {line.rstrip()}")
+                    if "trycloudflare.com" in line and "https://" in line:
+                        for word in line.split():
+                            if "trycloudflare.com" in word:
+                                tunnel_url = word.strip()
+                                print(f"\n✅ Quick Tunnel Ready!")
+                                print(f"   Public webhook URL: {tunnel_url}/gh-webhook")
+                                print(f"   (Note: URL changes on restart)\n")
+                                break
+            except Exception as e:
+                print(f"Error reading tunnel output: {e}")
+
+        thread = threading.Thread(target=read_tunnel_output, daemon=True)
+        thread.start()
+
+    except Exception as e:
+        print(f"Failed to start quick tunnel: {e}")
+
+def cleanup_tunnel():
+    """Clean up tunnel process on exit."""
+    global tunnel_process
+    if tunnel_process:
+        print("\nShutting down tunnel...")
+        tunnel_process.terminate()
+        try:
+            tunnel_process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            tunnel_process.kill()
 
 # Create FastAPI app
 app = FastAPI(title="ADW Webhook Trigger", description="GitHub webhook endpoint for ADW")
@@ -65,9 +194,19 @@ async def github_webhook(request: Request):
     try:
         # Get event type from header
         event_type = request.headers.get("X-GitHub-Event", "")
-        
-        # Parse webhook payload
-        payload = await request.json()
+        content_type = request.headers.get("Content-Type", "")
+
+        print(f"Received webhook: event={event_type}, content-type={content_type}")
+
+        # Handle form-encoded payload (GitHub sometimes sends this)
+        if "application/x-www-form-urlencoded" in content_type:
+            import json
+            form_data = await request.form()
+            payload_str = form_data.get("payload", "{}")
+            payload = json.loads(payload_str)
+        else:
+            # Try JSON directly
+            payload = await request.json()
         
         # Extract event details
         action = payload.get("action", "")
@@ -195,6 +334,22 @@ async def github_webhook(request: Request):
         }
 
 
+@app.get("/tunnel-url")
+async def get_tunnel_url():
+    """Get the public tunnel URL for webhook configuration."""
+    if tunnel_url:
+        return {
+            "status": "ready",
+            "tunnel_url": tunnel_url,
+            "webhook_url": f"{tunnel_url}/gh-webhook"
+        }
+    else:
+        return {
+            "status": "pending",
+            "message": "Tunnel is starting, try again in a few seconds"
+        }
+
+
 @app.get("/health")
 async def health():
     """Health check endpoint - runs comprehensive system health check."""
@@ -277,5 +432,14 @@ if __name__ == "__main__":
     print(f"Starting server on http://0.0.0.0:{PORT}")
     print(f"Webhook endpoint: POST /gh-webhook")
     print(f"Health check: GET /health")
-    
+
+    # Register cleanup handler
+    atexit.register(cleanup_tunnel)
+
+    # Start tunnel if enabled
+    if ENABLE_TUNNEL:
+        start_cloudflare_tunnel()
+        # Give tunnel time to start and print URL
+        time.sleep(2)
+
     uvicorn.run(app, host="0.0.0.0", port=PORT)
