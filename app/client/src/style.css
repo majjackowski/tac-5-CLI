@@ -82,6 +82,7 @@ h2 {
   gap: 1rem;
   margin-top: 1rem;
   align-items: center;
+  justify-content: flex-start;
 }
 
 /* Buttons */

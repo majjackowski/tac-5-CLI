@@ -1,5 +1,5 @@
 import os
-from typing import Dict, Any
+from typing import Dict, Any, Optional, List
 from openai import OpenAI
 from anthropic import Anthropic
 from core.data_models import QueryRequest
@@ -148,15 +148,201 @@ def generate_sql(request: QueryRequest, schema_info: Dict[str, Any]) -> str:
     """
     openai_key = os.environ.get("OPENAI_API_KEY")
     anthropic_key = os.environ.get("ANTHROPIC_API_KEY")
-    
+
     # Check API key availability first (OpenAI priority)
     if openai_key:
         return generate_sql_with_openai(request.query, schema_info)
     elif anthropic_key:
         return generate_sql_with_anthropic(request.query, schema_info)
-    
+
     # Fall back to request preference if both keys available or neither available
     if request.llm_provider == "openai":
         return generate_sql_with_openai(request.query, schema_info)
     else:
         return generate_sql_with_anthropic(request.query, schema_info)
+
+def generate_random_query_with_openai(schema_info: Dict[str, Any], table_names: Optional[List[str]] = None) -> Dict[str, Any]:
+    """
+    Generate random natural language query using OpenAI API
+    """
+    try:
+        # Get API key from environment
+        api_key = os.environ.get("OPENAI_API_KEY")
+        if not api_key:
+            raise ValueError("OPENAI_API_KEY environment variable not set")
+
+        client = OpenAI(api_key=api_key)
+
+        # Filter schema if specific tables requested
+        filtered_schema = schema_info
+        if table_names:
+            filtered_tables = {k: v for k, v in schema_info.get('tables', {}).items() if k in table_names}
+            filtered_schema = {'tables': filtered_tables}
+
+        # Format schema for prompt
+        schema_description = format_schema_for_prompt(filtered_schema)
+
+        # Create prompt
+        prompt = f"""Given the following database schema:
+
+{schema_description}
+
+Generate ONE interesting natural language query a user might ask about this data.
+
+Rules:
+- Limit to TWO sentences maximum
+- Make it specific and realistic
+- The query should be something that demonstrates the value of querying this data
+- Use natural, conversational language
+- Don't use technical SQL terms - phrase it like a real user would ask
+
+Also provide a brief context explaining why this query would be interesting or valuable (one sentence).
+
+Format your response as:
+QUERY: [the natural language query]
+CONTEXT: [why this query is interesting]
+TABLES: [comma-separated list of table names referenced]"""
+
+        # Call OpenAI API
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "You are a data analyst helping users discover interesting questions to ask about their data."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.8,  # Higher temperature for more variety
+            max_tokens=300
+        )
+
+        content = response.choices[0].message.content.strip()
+
+        # Parse the response
+        query = ""
+        context = ""
+        referenced_tables = []
+
+        for line in content.split('\n'):
+            if line.startswith('QUERY:'):
+                query = line[6:].strip()
+            elif line.startswith('CONTEXT:'):
+                context = line[8:].strip()
+            elif line.startswith('TABLES:'):
+                tables_str = line[7:].strip()
+                referenced_tables = [t.strip() for t in tables_str.split(',')]
+
+        # Validation
+        if not query:
+            raise ValueError("Failed to parse query from LLM response")
+
+        return {
+            "query": query,
+            "context": context or "An interesting query about your data",
+            "table_names": referenced_tables
+        }
+
+    except Exception as e:
+        raise Exception(f"Error generating random query with OpenAI: {str(e)}")
+
+def generate_random_query_with_anthropic(schema_info: Dict[str, Any], table_names: Optional[List[str]] = None) -> Dict[str, Any]:
+    """
+    Generate random natural language query using Anthropic API
+    """
+    try:
+        # Get API key from environment
+        api_key = os.environ.get("ANTHROPIC_API_KEY")
+        if not api_key:
+            raise ValueError("ANTHROPIC_API_KEY environment variable not set")
+
+        client = Anthropic(api_key=api_key)
+
+        # Filter schema if specific tables requested
+        filtered_schema = schema_info
+        if table_names:
+            filtered_tables = {k: v for k, v in schema_info.get('tables', {}).items() if k in table_names}
+            filtered_schema = {'tables': filtered_tables}
+
+        # Format schema for prompt
+        schema_description = format_schema_for_prompt(filtered_schema)
+
+        # Create prompt
+        prompt = f"""Given the following database schema:
+
+{schema_description}
+
+Generate ONE interesting natural language query a user might ask about this data.
+
+Rules:
+- Limit to TWO sentences maximum
+- Make it specific and realistic
+- The query should be something that demonstrates the value of querying this data
+- Use natural, conversational language
+- Don't use technical SQL terms - phrase it like a real user would ask
+
+Also provide a brief context explaining why this query would be interesting or valuable (one sentence).
+
+Format your response as:
+QUERY: [the natural language query]
+CONTEXT: [why this query is interesting]
+TABLES: [comma-separated list of table names referenced]"""
+
+        # Call Anthropic API
+        response = client.messages.create(
+            model="claude-3-haiku-20240307",
+            max_tokens=300,
+            temperature=0.8,  # Higher temperature for more variety
+            messages=[
+                {"role": "user", "content": prompt}
+            ]
+        )
+
+        content = response.content[0].text.strip()
+
+        # Parse the response
+        query = ""
+        context = ""
+        referenced_tables = []
+
+        for line in content.split('\n'):
+            if line.startswith('QUERY:'):
+                query = line[6:].strip()
+            elif line.startswith('CONTEXT:'):
+                context = line[8:].strip()
+            elif line.startswith('TABLES:'):
+                tables_str = line[7:].strip()
+                referenced_tables = [t.strip() for t in tables_str.split(',')]
+
+        # Validation
+        if not query:
+            raise ValueError("Failed to parse query from LLM response")
+
+        return {
+            "query": query,
+            "context": context or "An interesting query about your data",
+            "table_names": referenced_tables
+        }
+
+    except Exception as e:
+        raise Exception(f"Error generating random query with Anthropic: {str(e)}")
+
+def generate_random_query(schema_info: Dict[str, Any], table_names: Optional[List[str]] = None) -> Dict[str, Any]:
+    """
+    Generate a random natural language query based on database schema.
+    Routes to appropriate LLM provider (OpenAI priority, fallback to Anthropic).
+
+    Args:
+        schema_info: Database schema information
+        table_names: Optional list of table names to limit query generation to
+
+    Returns:
+        Dict with keys: query, context, table_names
+    """
+    openai_key = os.environ.get("OPENAI_API_KEY")
+    anthropic_key = os.environ.get("ANTHROPIC_API_KEY")
+
+    # Check API key availability (OpenAI priority)
+    if openai_key:
+        return generate_random_query_with_openai(schema_info, table_names)
+    elif anthropic_key:
+        return generate_random_query_with_anthropic(schema_info, table_names)
+    else:
+        raise ValueError("No LLM API key configured. Set OPENAI_API_KEY or ANTHROPIC_API_KEY environment variable.")

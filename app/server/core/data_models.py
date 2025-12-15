@@ -80,3 +80,13 @@ class HealthCheckResponse(BaseModel):
     tables_count: int
     version: str = "1.0.0"
     uptime_seconds: float
+
+# Random Query Models
+class RandomQueryRequest(BaseModel):
+    table_names: Optional[List[str]] = None  # Optionally limit to specific tables
+
+class RandomQueryResponse(BaseModel):
+    query: str
+    context: str  # Brief explanation of why this query is interesting
+    table_names: List[str]  # Tables referenced in the query
+    error: Optional[str] = None

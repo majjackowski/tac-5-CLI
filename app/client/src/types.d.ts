@@ -78,3 +78,15 @@ interface HealthCheckResponse {
   version: string;
   uptime_seconds: number;
 }
+
+// Random Query Types
+interface RandomQueryRequest {
+  table_names?: string[];
+}
+
+interface RandomQueryResponse {
+  query: string;
+  context: string;
+  table_names: string[];
+  error?: string;
+}
